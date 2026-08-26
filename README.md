@@ -36,17 +36,18 @@ Pivots require bars on both sides. A label therefore appears `pivot strength` ba
 
 ## Confirmation score and scenarios
 
-Bullish and bearish scenarios are independent. Each score ranges from **0 to 7**, awarding one point for each applicable factor:
+Bullish and bearish scenarios are independent. Each score ranges from **0 to 12**. The weighting favors directional and structural evidence over contextual touches:
 
-1. closed 1H bias;
-2. tracked market structure direction;
-3. a recent breakout (within the retest window);
-4. a retest that closes back on the valid side of the broken level;
-5. interaction with swing liquidity;
-6. interaction with demand (bullish) or supply (bearish); and
-7. candle confirmation (a bullish close above the prior high or bearish close below the prior low).
+1. closed 1H bias (2 points);
+2. local EMA direction (1 point);
+3. tracked market structure direction (2 points);
+4. a recent breakout (1 point, within the retest window);
+5. the first retest that closes back on the valid side of the stored broken level (2 points);
+6. interaction with swing liquidity (1 point);
+7. interaction with demand (bullish) or supply (bearish) (1 point); and
+8. candle confirmation (2 points: a bullish close above the prior high or bearish close below the prior low).
 
-Reaching the score alone is insufficient. Confirmation also requires a closed candle with candle confirmation and a recent breakout, retest, or CHoCH. Set **Minimum confirmation score** from 3 through 7; higher values are more selective. A scenario stays active until its structural invalidation occurs. If both scenarios are active during a transition, the dashboard reports **Both active** rather than hiding either independent state.
+Reaching the score alone is insufficient. Confirmation also requires the closed 1H bias, tracked structure, candle-close trigger, and breakout direction to agree. **Require breakout retest** is enabled by default, so a scenario waits for the first valid retest within the configurable window; disabling it permits confirmation on the breakout close. Each broken pivot and retest can trigger only once. Set **Minimum confirmation score** from 5 through 12; higher values are more selective. A scenario stays active until its structural invalidation occurs.
 
 ## Alerts
 
