@@ -1,0 +1,236 @@
+//@version=6
+indicator("XAUUSD Market Structure Analyzer", "XAU Analyzer", overlay = true, max_lines_count = 20, max_boxes_count = 12, max_labels_count = 100)
+
+//=============================================================================
+// Inputs
+//=============================================================================
+groupTrend = "Trend and confirmation"
+fastLength       = input.int(20, "Fast EMA", minval = 2, group = groupTrend)
+slowLength       = input.int(50, "Slow EMA", minval = 3, group = groupTrend)
+atrLength        = input.int(14, "ATR length", minval = 2, group = groupTrend)
+sidewaysAtrBand  = input.float(0.25, "Sideways EMA distance (ATR)", minval = 0.0, step = 0.05, group = groupTrend)
+minimumScore     = input.int(5, "Minimum confirmation score", minval = 3, maxval = 7, group = groupTrend)
+retestWindow     = input.int(12, "Retest window (bars)", minval = 1, maxval = 50, group = groupTrend)
+
+groupStructure = "Structure and zones"
+pivotLength       = input.int(5, "Swing pivot strength", minval = 2, maxval = 20, group = groupStructure)
+zoneAtrMultiplier = input.float(0.35, "Zone thickness (ATR)", minval = 0.05, maxval = 2.0, step = 0.05, group = groupStructure)
+liquidityAtrRange = input.float(0.20, "Liquidity proximity (ATR)", minval = 0.05, maxval = 1.0, step = 0.05, group = groupStructure)
+showZones         = input.bool(true, "Show supply, demand, and liquidity zones", group = groupStructure)
+showSwingLabels   = input.bool(true, "Show swing classifications", group = groupStructure)
+
+groupDisplay = "Display"
+showEma       = input.bool(true, "Show trend EMAs", group = groupDisplay)
+showDashboard = input.bool(true, "Show dashboard", group = groupDisplay)
+
+//=============================================================================
+// Helpers
+//=============================================================================
+f_direction(float fast, float slow, float atrValue, float band) =>
+    math.abs(fast - slow) <= atrValue * band ? 0 : fast > slow ? 1 : -1
+
+f_directionText(int direction) =>
+    direction == 1 ? "Bullish" : direction == -1 ? "Bearish" : "Sideways"
+
+f_directionColor(int direction) =>
+    direction == 1 ? color.lime : direction == -1 ? color.red : color.silver
+
+f_priceText(float price) =>
+    na(price) ? "N/A" : str.tostring(price, format.mintick)
+
+// The [1] expressions plus lookahead_on expose only the last fully closed 1H
+// candle. This remains stable while the current chart bar is forming.
+oneHourFast  = request.security(syminfo.tickerid, "60", ta.ema(close, fastLength)[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+oneHourSlow  = request.security(syminfo.tickerid, "60", ta.ema(close, slowLength)[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+oneHourAtr   = request.security(syminfo.tickerid, "60", ta.atr(atrLength)[1], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+
+fastEma = ta.ema(close, fastLength)
+slowEma = ta.ema(close, slowLength)
+atrValue = ta.atr(atrLength)
+currentDirection = f_direction(fastEma, slowEma, atrValue, sidewaysAtrBand)
+oneHourDirection = f_direction(oneHourFast, oneHourSlow, oneHourAtr, sidewaysAtrBand)
+
+//=============================================================================
+// Confirmed swing points and market structure
+// Pivots are acted on only after pivotLength right-side bars have closed.
+//=============================================================================
+pivotHigh = ta.pivothigh(high, pivotLength, pivotLength)
+pivotLow  = ta.pivotlow(low, pivotLength, pivotLength)
+newSwingHigh = barstate.isconfirmed and not na(pivotHigh)
+newSwingLow  = barstate.isconfirmed and not na(pivotLow)
+
+var float latestSwingHigh = na
+var float priorSwingHigh = na
+var float latestSwingLow = na
+var float priorSwingLow = na
+var int latestHighBar = na
+var int latestLowBar = na
+var string highClass = "Waiting"
+var string lowClass = "Waiting"
+
+if newSwingHigh
+    priorSwingHigh := latestSwingHigh
+    latestSwingHigh := pivotHigh
+    latestHighBar := bar_index - pivotLength
+    highClass := na(priorSwingHigh) ? "Swing High" : latestSwingHigh > priorSwingHigh ? "Higher High" : "Lower High"
+    if showSwingLabels
+        label.new(latestHighBar, latestSwingHigh, highClass, xloc = xloc.bar_index, style = label.style_label_down, color = color.new(color.red, 25), textcolor = color.white, size = size.tiny)
+
+if newSwingLow
+    priorSwingLow := latestSwingLow
+    latestSwingLow := pivotLow
+    latestLowBar := bar_index - pivotLength
+    lowClass := na(priorSwingLow) ? "Swing Low" : latestSwingLow > priorSwingLow ? "Higher Low" : "Lower Low"
+    if showSwingLabels
+        label.new(latestLowBar, latestSwingLow, lowClass, xloc = xloc.bar_index, style = label.style_label_up, color = color.new(color.green, 25), textcolor = color.white, size = size.tiny)
+
+var int structureBias = 0
+bullishBreak = barstate.isconfirmed and not na(latestSwingHigh) and close > latestSwingHigh and close[1] <= latestSwingHigh
+bearishBreak = barstate.isconfirmed and not na(latestSwingLow) and close < latestSwingLow and close[1] >= latestSwingLow
+bullishChoch = bullishBreak and structureBias == -1
+bearishChoch = bearishBreak and structureBias == 1
+bullishBos = bullishBreak and structureBias != -1
+bearishBos = bearishBreak and structureBias != 1
+
+if bullishBreak
+    structureBias := 1
+if bearishBreak
+    structureBias := -1
+
+structureText = bullishChoch ? "Bullish CHoCH" : bearishChoch ? "Bearish CHoCH" : structureBias == 1 ? highClass + " / " + lowClass : structureBias == -1 ? highClass + " / " + lowClass : "Developing"
+
+plotshape(bullishBos, "Bullish BOS", shape.labelup, location.belowbar, color.new(color.green, 0), text = "BOS", textcolor = color.white, size = size.tiny)
+plotshape(bearishBos, "Bearish BOS", shape.labeldown, location.abovebar, color.new(color.red, 0), text = "BOS", textcolor = color.white, size = size.tiny)
+plotshape(bullishChoch, "Bullish CHoCH", shape.labelup, location.belowbar, color.new(color.teal, 0), text = "CHoCH", textcolor = color.white, size = size.tiny)
+plotshape(bearishChoch, "Bearish CHoCH", shape.labeldown, location.abovebar, color.new(color.orange, 0), text = "CHoCH", textcolor = color.white, size = size.tiny)
+
+//=============================================================================
+// Support/resistance and reusable zone objects
+//=============================================================================
+zoneThickness = atrValue * zoneAtrMultiplier
+var line supportLine = na
+var line resistanceLine = na
+var box demandBox = na
+var box supplyBox = na
+var box lowLiquidityBox = na
+var box highLiquidityBox = na
+
+if newSwingLow
+    if na(supportLine)
+        supportLine := line.new(latestLowBar, latestSwingLow, bar_index, latestSwingLow, extend = extend.right, color = color.new(color.lime, 10), width = 2)
+    else
+        line.set_xy1(supportLine, latestLowBar, latestSwingLow)
+        line.set_xy2(supportLine, bar_index, latestSwingLow)
+    if showZones
+        if na(demandBox)
+            demandBox := box.new(latestLowBar, latestSwingLow + zoneThickness, bar_index, latestSwingLow - zoneThickness, bgcolor = color.new(color.green, 88), border_color = color.new(color.green, 45), extend = extend.right)
+            lowLiquidityBox := box.new(latestLowBar, latestSwingLow + atrValue * liquidityAtrRange, bar_index, latestSwingLow - atrValue * liquidityAtrRange, bgcolor = color.new(color.aqua, 92), border_color = color.new(color.aqua, 65), extend = extend.right)
+        else
+            box.set_lefttop(demandBox, latestLowBar, latestSwingLow + zoneThickness)
+            box.set_rightbottom(demandBox, bar_index, latestSwingLow - zoneThickness)
+            box.set_lefttop(lowLiquidityBox, latestLowBar, latestSwingLow + atrValue * liquidityAtrRange)
+            box.set_rightbottom(lowLiquidityBox, bar_index, latestSwingLow - atrValue * liquidityAtrRange)
+
+if newSwingHigh
+    if na(resistanceLine)
+        resistanceLine := line.new(latestHighBar, latestSwingHigh, bar_index, latestSwingHigh, extend = extend.right, color = color.new(color.red, 10), width = 2)
+    else
+        line.set_xy1(resistanceLine, latestHighBar, latestSwingHigh)
+        line.set_xy2(resistanceLine, bar_index, latestSwingHigh)
+    if showZones
+        if na(supplyBox)
+            supplyBox := box.new(latestHighBar, latestSwingHigh + zoneThickness, bar_index, latestSwingHigh - zoneThickness, bgcolor = color.new(color.red, 88), border_color = color.new(color.red, 45), extend = extend.right)
+            highLiquidityBox := box.new(latestHighBar, latestSwingHigh + atrValue * liquidityAtrRange, bar_index, latestSwingHigh - atrValue * liquidityAtrRange, bgcolor = color.new(color.orange, 92), border_color = color.new(color.orange, 65), extend = extend.right)
+        else
+            box.set_lefttop(supplyBox, latestHighBar, latestSwingHigh + zoneThickness)
+            box.set_rightbottom(supplyBox, bar_index, latestSwingHigh - zoneThickness)
+            box.set_lefttop(highLiquidityBox, latestHighBar, latestSwingHigh + atrValue * liquidityAtrRange)
+            box.set_rightbottom(highLiquidityBox, bar_index, latestSwingHigh - atrValue * liquidityAtrRange)
+
+//=============================================================================
+// Scenario engine: breakout -> optional retest, confluence score, confirmation
+//=============================================================================
+var int bullBreakBar = na
+var int bearBreakBar = na
+if bullishBreak
+    bullBreakBar := bar_index
+if bearishBreak
+    bearBreakBar := bar_index
+
+bullRetest = not na(bullBreakBar) and bar_index > bullBreakBar and bar_index - bullBreakBar <= retestWindow and low <= latestSwingHigh and close > latestSwingHigh
+bearRetest = not na(bearBreakBar) and bar_index > bearBreakBar and bar_index - bearBreakBar <= retestWindow and high >= latestSwingLow and close < latestSwingLow
+bullBreakActive = not na(bullBreakBar) and bar_index - bullBreakBar <= retestWindow
+bearBreakActive = not na(bearBreakBar) and bar_index - bearBreakBar <= retestWindow
+
+nearDemand = not na(latestSwingLow) and low <= latestSwingLow + zoneThickness and close >= latestSwingLow - zoneThickness
+nearSupply = not na(latestSwingHigh) and high >= latestSwingHigh - zoneThickness and close <= latestSwingHigh + zoneThickness
+bullLiquidityInteraction = not na(latestSwingLow) and low <= latestSwingLow + atrValue * liquidityAtrRange and close > latestSwingLow
+bearLiquidityInteraction = not na(latestSwingHigh) and high >= latestSwingHigh - atrValue * liquidityAtrRange and close < latestSwingHigh
+bullCandle = barstate.isconfirmed and close > open and close > high[1]
+bearCandle = barstate.isconfirmed and close < open and close < low[1]
+
+// Seven independent factors; no scenario can trigger from a single condition.
+bullScore = (oneHourDirection == 1 ? 1 : 0) + (structureBias == 1 ? 1 : 0) + (bullBreakActive ? 1 : 0) + (bullRetest ? 1 : 0) + (bullLiquidityInteraction ? 1 : 0) + (nearDemand ? 1 : 0) + (bullCandle ? 1 : 0)
+bearScore = (oneHourDirection == -1 ? 1 : 0) + (structureBias == -1 ? 1 : 0) + (bearBreakActive ? 1 : 0) + (bearRetest ? 1 : 0) + (bearLiquidityInteraction ? 1 : 0) + (nearSupply ? 1 : 0) + (bearCandle ? 1 : 0)
+
+// A close confirmation plus either a breakout/retest or structure shift is
+// mandatory in addition to reaching the configurable score.
+bullSetup = barstate.isconfirmed and bullCandle and (bullBreakActive or bullRetest or bullishChoch) and bullScore >= minimumScore
+bearSetup = barstate.isconfirmed and bearCandle and (bearBreakActive or bearRetest or bearishChoch) and bearScore >= minimumScore
+var int bullScenario = 0
+var int bearScenario = 0
+bullConfirmed = bullSetup and bullScenario == 0
+bearConfirmed = bearSetup and bearScenario == 0
+if bullConfirmed
+    bullScenario := 1
+if bearConfirmed
+    bearScenario := 1
+
+bullInvalidated = barstate.isconfirmed and bullScenario == 1 and not na(latestSwingLow) and close < latestSwingLow
+bearInvalidated = barstate.isconfirmed and bearScenario == 1 and not na(latestSwingHigh) and close > latestSwingHigh
+if bullInvalidated
+    bullScenario := 0
+if bearInvalidated
+    bearScenario := 0
+
+plotshape(bullConfirmed, "Bullish confirmation", shape.labelup, location.belowbar, color.lime, text = "BULL\nCONF", textcolor = color.black, size = size.small)
+plotshape(bearConfirmed, "Bearish confirmation", shape.labeldown, location.abovebar, color.red, text = "BEAR\nCONF", textcolor = color.white, size = size.small)
+plotshape(bullInvalidated, "Bullish invalidation", shape.xcross, location.abovebar, color.red, text = "BULL INV", textcolor = color.red, size = size.small)
+plotshape(bearInvalidated, "Bearish invalidation", shape.xcross, location.belowbar, color.lime, text = "BEAR INV", textcolor = color.lime, size = size.small)
+
+plot(showEma ? fastEma : na, "Fast EMA", color = color.new(color.aqua, 20))
+plot(showEma ? slowEma : na, "Slow EMA", color = color.new(color.yellow, 20), linewidth = 2)
+bgcolor(currentDirection == 0 ? color.new(color.gray, 94) : na, title = "Sideways market shading")
+
+//=============================================================================
+// Dashboard
+//=============================================================================
+var table dashboard = table.new(position.top_right, 2, 8, border_width = 1, frame_color = color.new(color.white, 65))
+if barstate.islast and showDashboard
+    scenarioText = bullScenario == 1 and bearScenario == 1 ? "Both active" : bullScenario == 1 ? "Bullish active" : bearScenario == 1 ? "Bearish active" : "Watching"
+    table.cell(dashboard, 0, 0, "XAUUSD ANALYZER", bgcolor = color.new(color.navy, 15), text_color = color.white)
+    table.cell(dashboard, 1, 0, timeframe.period, bgcolor = color.new(color.navy, 15), text_color = color.white)
+    table.cell(dashboard, 0, 1, "Current trend")
+    table.cell(dashboard, 1, 1, f_directionText(currentDirection), text_color = f_directionColor(currentDirection))
+    table.cell(dashboard, 0, 2, "1H bias")
+    table.cell(dashboard, 1, 2, f_directionText(oneHourDirection), text_color = f_directionColor(oneHourDirection))
+    table.cell(dashboard, 0, 3, "Structure")
+    table.cell(dashboard, 1, 3, structureText)
+    table.cell(dashboard, 0, 4, "Bull / Bear score")
+    table.cell(dashboard, 1, 4, str.tostring(bullScore) + " / " + str.tostring(bearScore))
+    table.cell(dashboard, 0, 5, "Nearest support")
+    table.cell(dashboard, 1, 5, f_priceText(latestSwingLow))
+    table.cell(dashboard, 0, 6, "Nearest resistance")
+    table.cell(dashboard, 1, 6, f_priceText(latestSwingHigh))
+    table.cell(dashboard, 0, 7, "Scenario")
+    table.cell(dashboard, 1, 7, scenarioText)
+
+//=============================================================================
+// Alerts (all event booleans are confirmed-bar events)
+//=============================================================================
+alertcondition(bullConfirmed, "Bullish scenario confirmed", "XAUUSD bullish scenario confirmed on {{interval}} at {{close}}")
+alertcondition(bearConfirmed, "Bearish scenario confirmed", "XAUUSD bearish scenario confirmed on {{interval}} at {{close}}")
+alertcondition(bullInvalidated, "Bullish scenario invalidated", "XAUUSD bullish scenario invalidated on {{interval}} at {{close}}")
+alertcondition(bearInvalidated, "Bearish scenario invalidated", "XAUUSD bearish scenario invalidated on {{interval}} at {{close}}")
+alertcondition(bullishBos or bearishBos, "Break of Structure (BOS)", "XAUUSD confirmed BOS on {{interval}} at {{close}}")
+alertcondition(bullishChoch or bearishChoch, "Change of Character (CHoCH)", "XAUUSD confirmed CHoCH on {{interval}} at {{close}}")
