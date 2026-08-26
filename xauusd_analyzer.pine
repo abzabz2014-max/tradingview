@@ -9,8 +9,9 @@ fastLength       = input.int(20, "Fast EMA", minval = 2, group = groupTrend)
 slowLength       = input.int(50, "Slow EMA", minval = 3, group = groupTrend)
 atrLength        = input.int(14, "ATR length", minval = 2, group = groupTrend)
 sidewaysAtrBand  = input.float(0.25, "Sideways EMA distance (ATR)", minval = 0.0, step = 0.05, group = groupTrend)
-minimumScore     = input.int(5, "Minimum confirmation score", minval = 3, maxval = 7, group = groupTrend)
+minimumScore     = input.int(8, "Minimum confirmation score", minval = 5, maxval = 12, group = groupTrend)
 retestWindow     = input.int(12, "Retest window (bars)", minval = 1, maxval = 50, group = groupTrend)
+requireRetest    = input.bool(true, "Require breakout retest", tooltip = "When enabled, confirmations wait for the first valid retest of the broken structure level.", group = groupTrend)
 
 groupStructure = "Structure and zones"
 pivotLength       = input.int(5, "Swing pivot strength", minval = 2, maxval = 20, group = groupStructure)
@@ -85,16 +86,22 @@ if newSwingLow
         label.new(latestLowBar, latestSwingLow, lowClass, xloc = xloc.bar_index, style = label.style_label_up, color = color.new(color.green, 25), textcolor = color.white, size = size.tiny)
 
 var int structureBias = 0
-bullishBreak = barstate.isconfirmed and not na(latestSwingHigh) and close > latestSwingHigh and close[1] <= latestSwingHigh
-bearishBreak = barstate.isconfirmed and not na(latestSwingLow) and close < latestSwingLow and close[1] >= latestSwingLow
+// Each pivot can produce only one structural-break event. This also prevents a
+// move back below/above a level from printing another label for the same swing.
+var int brokenHighBar = na
+var int brokenLowBar = na
+bullishBreak = barstate.isconfirmed and not na(latestSwingHigh) and (na(brokenHighBar) or latestHighBar != brokenHighBar) and close > latestSwingHigh and close[1] <= latestSwingHigh
+bearishBreak = barstate.isconfirmed and not na(latestSwingLow) and (na(brokenLowBar) or latestLowBar != brokenLowBar) and close < latestSwingLow and close[1] >= latestSwingLow
 bullishChoch = bullishBreak and structureBias == -1
 bearishChoch = bearishBreak and structureBias == 1
 bullishBos = bullishBreak and structureBias != -1
 bearishBos = bearishBreak and structureBias != 1
 
 if bullishBreak
+    brokenHighBar := latestHighBar
     structureBias := 1
 if bearishBreak
+    brokenLowBar := latestLowBar
     structureBias := -1
 
 structureText = bullishChoch ? "Bullish CHoCH" : bearishChoch ? "Bearish CHoCH" : structureBias == 1 ? highClass + " / " + lowClass : structureBias == -1 ? highClass + " / " + lowClass : "Developing"
@@ -114,6 +121,22 @@ var box demandBox = na
 var box supplyBox = na
 var box lowLiquidityBox = na
 var box highLiquidityBox = na
+
+// Remove, rather than merely stop updating, visual zones when their layer is
+// disabled. Re-enabling creates only the four current-zone objects again.
+if not showZones
+    if not na(demandBox)
+        box.delete(demandBox)
+        demandBox := na
+    if not na(supplyBox)
+        box.delete(supplyBox)
+        supplyBox := na
+    if not na(lowLiquidityBox)
+        box.delete(lowLiquidityBox)
+        lowLiquidityBox := na
+    if not na(highLiquidityBox)
+        box.delete(highLiquidityBox)
+        highLiquidityBox := na
 
 if newSwingLow
     if na(supportLine)
@@ -152,15 +175,27 @@ if newSwingHigh
 //=============================================================================
 var int bullBreakBar = na
 var int bearBreakBar = na
+var float bullBreakLevel = na
+var float bearBreakLevel = na
+var bool bullRetestUsed = false
+var bool bearRetestUsed = false
 if bullishBreak
     bullBreakBar := bar_index
+    bullBreakLevel := latestSwingHigh
+    bullRetestUsed := false
 if bearishBreak
     bearBreakBar := bar_index
+    bearBreakLevel := latestSwingLow
+    bearRetestUsed := false
 
-bullRetest = not na(bullBreakBar) and bar_index > bullBreakBar and bar_index - bullBreakBar <= retestWindow and low <= latestSwingHigh and close > latestSwingHigh
-bearRetest = not na(bearBreakBar) and bar_index > bearBreakBar and bar_index - bearBreakBar <= retestWindow and high >= latestSwingLow and close < latestSwingLow
 bullBreakActive = not na(bullBreakBar) and bar_index - bullBreakBar <= retestWindow
 bearBreakActive = not na(bearBreakBar) and bar_index - bearBreakBar <= retestWindow
+bullRetest = barstate.isconfirmed and bullBreakActive and not bullRetestUsed and bar_index > bullBreakBar and low <= bullBreakLevel and close > bullBreakLevel
+bearRetest = barstate.isconfirmed and bearBreakActive and not bearRetestUsed and bar_index > bearBreakBar and high >= bearBreakLevel and close < bearBreakLevel
+if bullRetest
+    bullRetestUsed := true
+if bearRetest
+    bearRetestUsed := true
 
 nearDemand = not na(latestSwingLow) and low <= latestSwingLow + zoneThickness and close >= latestSwingLow - zoneThickness
 nearSupply = not na(latestSwingHigh) and high >= latestSwingHigh - zoneThickness and close <= latestSwingHigh + zoneThickness
@@ -169,14 +204,18 @@ bearLiquidityInteraction = not na(latestSwingHigh) and high >= latestSwingHigh -
 bullCandle = barstate.isconfirmed and close > open and close > high[1]
 bearCandle = barstate.isconfirmed and close < open and close < low[1]
 
-// Seven independent factors; no scenario can trigger from a single condition.
-bullScore = (oneHourDirection == 1 ? 1 : 0) + (structureBias == 1 ? 1 : 0) + (bullBreakActive ? 1 : 0) + (bullRetest ? 1 : 0) + (bullLiquidityInteraction ? 1 : 0) + (nearDemand ? 1 : 0) + (bullCandle ? 1 : 0)
-bearScore = (oneHourDirection == -1 ? 1 : 0) + (structureBias == -1 ? 1 : 0) + (bearBreakActive ? 1 : 0) + (bearRetest ? 1 : 0) + (bearLiquidityInteraction ? 1 : 0) + (nearSupply ? 1 : 0) + (bearCandle ? 1 : 0)
+// Twelve balanced points. Direction and confirmed structure carry more weight
+// than contextual zone touches; a retest is stronger than an untested break.
+bullScore = (oneHourDirection == 1 ? 2 : 0) + (currentDirection == 1 ? 1 : 0) + (structureBias == 1 ? 2 : 0) + (bullBreakActive ? 1 : 0) + (bullRetest ? 2 : 0) + (bullLiquidityInteraction ? 1 : 0) + (nearDemand ? 1 : 0) + (bullCandle ? 2 : 0)
+bearScore = (oneHourDirection == -1 ? 2 : 0) + (currentDirection == -1 ? 1 : 0) + (structureBias == -1 ? 2 : 0) + (bearBreakActive ? 1 : 0) + (bearRetest ? 2 : 0) + (bearLiquidityInteraction ? 1 : 0) + (nearSupply ? 1 : 0) + (bearCandle ? 2 : 0)
 
-// A close confirmation plus either a breakout/retest or structure shift is
-// mandatory in addition to reaching the configurable score.
-bullSetup = barstate.isconfirmed and bullCandle and (bullBreakActive or bullRetest or bullishChoch) and bullScore >= minimumScore
-bearSetup = barstate.isconfirmed and bearCandle and (bearBreakActive or bearRetest or bearishChoch) and bearScore >= minimumScore
+// Mandatory gates ensure a score cannot be assembled from correlated zone
+// conditions alone: HTF bias, local structure, a close trigger, and a structural
+// breakout (plus its retest by default) must agree.
+bullTrigger = requireRetest ? bullRetest : (bullishBreak or bullRetest)
+bearTrigger = requireRetest ? bearRetest : (bearishBreak or bearRetest)
+bullSetup = barstate.isconfirmed and oneHourDirection == 1 and structureBias == 1 and bullCandle and bullTrigger and bullScore >= minimumScore
+bearSetup = barstate.isconfirmed and oneHourDirection == -1 and structureBias == -1 and bearCandle and bearTrigger and bearScore >= minimumScore
 var int bullScenario = 0
 var int bearScenario = 0
 bullConfirmed = bullSetup and bullScenario == 0
@@ -205,25 +244,30 @@ bgcolor(currentDirection == 0 ? color.new(color.gray, 94) : na, title = "Sideway
 //=============================================================================
 // Dashboard
 //=============================================================================
-var table dashboard = table.new(position.top_right, 2, 8, border_width = 1, frame_color = color.new(color.white, 65))
+var table dashboard = table.new(position.top_right, 2, 10, border_width = 1, frame_color = color.new(color.white, 65))
 if barstate.islast and showDashboard
-    scenarioText = bullScenario == 1 and bearScenario == 1 ? "Both active" : bullScenario == 1 ? "Bullish active" : bearScenario == 1 ? "Bearish active" : "Watching"
     table.cell(dashboard, 0, 0, "XAUUSD ANALYZER", bgcolor = color.new(color.navy, 15), text_color = color.white)
     table.cell(dashboard, 1, 0, timeframe.period, bgcolor = color.new(color.navy, 15), text_color = color.white)
-    table.cell(dashboard, 0, 1, "Current trend")
+    table.cell(dashboard, 0, 1, "Market direction")
     table.cell(dashboard, 1, 1, f_directionText(currentDirection), text_color = f_directionColor(currentDirection))
     table.cell(dashboard, 0, 2, "1H bias")
     table.cell(dashboard, 1, 2, f_directionText(oneHourDirection), text_color = f_directionColor(oneHourDirection))
     table.cell(dashboard, 0, 3, "Structure")
     table.cell(dashboard, 1, 3, structureText)
-    table.cell(dashboard, 0, 4, "Bull / Bear score")
-    table.cell(dashboard, 1, 4, str.tostring(bullScore) + " / " + str.tostring(bearScore))
-    table.cell(dashboard, 0, 5, "Nearest support")
-    table.cell(dashboard, 1, 5, f_priceText(latestSwingLow))
-    table.cell(dashboard, 0, 6, "Nearest resistance")
-    table.cell(dashboard, 1, 6, f_priceText(latestSwingHigh))
-    table.cell(dashboard, 0, 7, "Scenario")
-    table.cell(dashboard, 1, 7, scenarioText)
+    table.cell(dashboard, 0, 4, "Bullish score")
+    table.cell(dashboard, 1, 4, str.tostring(bullScore) + " / 12", text_color = bullScore >= minimumScore ? color.lime : color.silver)
+    table.cell(dashboard, 0, 5, "Bearish score")
+    table.cell(dashboard, 1, 5, str.tostring(bearScore) + " / 12", text_color = bearScore >= minimumScore ? color.red : color.silver)
+    table.cell(dashboard, 0, 6, "Nearest support")
+    table.cell(dashboard, 1, 6, f_priceText(latestSwingLow))
+    table.cell(dashboard, 0, 7, "Nearest resistance")
+    table.cell(dashboard, 1, 7, f_priceText(latestSwingHigh))
+    table.cell(dashboard, 0, 8, "Bullish scenario")
+    table.cell(dashboard, 1, 8, bullScenario == 1 ? "Active" : bullBreakActive ? bullRetestUsed ? "Retested" : "Awaiting retest" : "Watching", text_color = bullScenario == 1 ? color.lime : color.silver)
+    table.cell(dashboard, 0, 9, "Bearish scenario")
+    table.cell(dashboard, 1, 9, bearScenario == 1 ? "Active" : bearBreakActive ? bearRetestUsed ? "Retested" : "Awaiting retest" : "Watching", text_color = bearScenario == 1 ? color.red : color.silver)
+else if barstate.islast
+    table.clear(dashboard, 0, 0, 1, 9)
 
 //=============================================================================
 // Alerts (all event booleans are confirmed-bar events)
